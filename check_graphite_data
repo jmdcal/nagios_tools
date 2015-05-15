@@ -3,12 +3,15 @@
 import getopt
 import sys
 import urllib
+import urllib2
+import base64
 
 STATE_OK = 0
 STATE_WARNING = 1
 STATE_CRITICAL = 2
 STATE_UNKNOWN = 3
 STATE_DEPENDENT = 4
+import secrets
 
 def usage():
     print 'Usage:'
@@ -37,16 +40,30 @@ def pull_graphite_data(url):
     if not url.endswith('&rawData'):
         url = url + '&rawData'
 
+    # from 
+    print "create request", url
+    request = urllib2.Request(url)
+
+    username = "nagios-user"
+    password = secrets.PASSWORD
+
+    # You need the replace to handle encodestring adding a trailing newline 
+    # (https://docs.python.org/2/library/base64.html#base64.encodestring)
+    base64string = base64.encodestring('%s:%s' % (username, password)).replace('\n', '')
+    request.add_header("Authorization", "Basic %s" % base64string)  
+
     # Catch URL errors
-    try:
-	data = urllib.urlopen(url).read()
+    #try:
+    if True:
+	data = urllib2.urlopen(request).read()
 	if len(data) == 0:
 	    print "Error: No data was returned. Did you specify an existing metric? - " + url
 	    sys.exit(STATE_UNKNOWN)
 	return data
-    except Exception,e:
-	print "Error: "+ str(e) +" - " + url
-        sys.exit(STATE_UNKNOWN)
+    # except Exception,e:
+    #     print "Error: "+ str(e) +" - " + url
+    #     raise e
+    #     sys.exit(STATE_UNKNOWN)
 
 def eval_graphite_data(data, seconds):
     """Get the most recent correct value from the data"""
@@ -104,19 +121,20 @@ def get_value(url, seconds=0):
 
 def main(argv):
     try:
-        opts, args = getopt.getopt(argv, 'hWULru:c:w:s:',
+        opts, args = getopt.getopt(argv, 'hWULru:x:n:w:s:',
                                     ['help', 'holt-winters', 'critupper',
-                                     'critlower', 'url=', 'crit=', 'warn=',
+                                     'critlower', 'url=', 'max=', 'min=', 'warnp='
                                      'seconds=', 'd1=', 'd2='
 				     ,'scale=' ,'scale-invert='
 				     ])
     except getopt.GetoptError, err:
-        print str(err)
+        print "ERROR" + str(err)
         sys.exit(STATE_UNKNOWN)
 
     url = None
     warn = None
-    crit = None
+    cmax = None
+    cmin = None
     seconds = 0
     diff1 = None
     diff2 = None
@@ -127,14 +145,17 @@ def main(argv):
     scale = 1
     for opt, arg in opts:
         if opt in ('-h', '--help'):
+            print "HELP"
             usage()
             sys.exit()
         elif opt in ('-u', '--url'):
             url = arg
-        elif opt in ('-w', '--warn'):
+        elif opt in ('-w', '--warnp'):
             warn = float(arg)
-        elif opt in ('-c', '--crit'):
-            crit = float(arg)
+        elif opt in ('-x', '--max'):
+            cmax = float(arg)
+        elif opt in ('-n', '--min'):
+            cmin = float(arg)
         elif opt in ('-s', '--seconds'):
             seconds = int(arg)
         elif opt in ('-r'):
@@ -153,7 +174,7 @@ def main(argv):
             scale = float(arg)
         elif opt in ('--scale-invert'):
             scale = 1 / float(arg)
-    if not hw and ((url == None) or (warn == None) or (crit == None)) \
+    if not hw and ((url == None) or (warn == None) or (cmax == None) or (cmin == None)) \
             and not diff1 and not diff2:
         usage()
         sys.exit(STATE_UNKNOWN)
@@ -181,8 +202,11 @@ def main(argv):
         graphite_data = get_value(url, seconds)
     graphite_data *= scale
 
-    print 'Current value: %s, warn threshold: %s, crit threshold: %s' % \
-           (graphite_data, warn, crit)
+    band = (cmax - cmin) * (1/warn)
+    wmin = cmin + band
+    wmax = cmax - band
+    print 'Current value: %s, warn percent: %s, max crit threshold: %s,  max warn threshold: %s, min crit threshold: %s, min warn threshold: %s' % \
+           (graphite_data, warn, cmax, wmax, cmin, wmin)
     if reverse == True:
         if crit >= graphite_data:
             sys.exit(STATE_CRITICAL)
@@ -191,9 +215,10 @@ def main(argv):
         else:
             sys.exit(STATE_OK)
     else:
-        if graphite_data >= crit:
+
+        if graphite_data >= cmax or graphite_data <= cmin:
             sys.exit(STATE_CRITICAL)
-        elif graphite_data >= warn:
+        elif graphite_data >= (cmax - band) or graphite_data <= (cmin + band):
             sys.exit(STATE_WARNING)
         else:
             sys.exit(STATE_OK)
